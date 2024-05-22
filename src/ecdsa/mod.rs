@@ -291,7 +291,7 @@ impl<C: Signing> Secp256k1<C> {
         self.sign_ecdsa_with_noncedata_pointer(msg, sk, noncedata_ptr)
     }
 
-    fn sign_grind_with_check(
+    pub fn sign_grind_with_check(
         &self, msg: &Message,
         sk: &SecretKey,
         check: impl Fn(&ffi::Signature) -> bool) -> Signature {
@@ -316,6 +316,20 @@ impl<C: Signing> Secp256k1<C> {
 
                     // When fuzzing, these checks will usually spinloop forever, so just short-circuit them.
                     #[cfg(fuzzing)]
+                    return Signature::from(ret);
+                }
+            }
+    }
+
+    pub fn sign_grind_with_check_external(
+        &self,
+        msg: &Message,
+        check: impl Fn(&Signature) -> bool,
+        sign: impl Fn(&Message) -> Signature,
+    ) -> Signature {
+            loop {
+                let ret = sign(msg);
+                if check(&ret) {
                     return Signature::from(ret);
                 }
             }
@@ -362,6 +376,14 @@ impl<C: Signing> Secp256k1<C> {
     /// Requires a signing capable context.
     pub fn sign_ecdsa_low_r(&self, msg: &Message, sk: &SecretKey) -> Signature {
         self.sign_grind_with_check(msg, sk, compact_sig_has_zero_first_bit)
+    }
+
+    pub fn sign_ecdsa_low_r_external(
+        &self,
+        msg: &Message,
+        sign: impl Fn(&Message) -> Signature,
+    ) -> Signature {
+        self.sign_grind_with_check_external(msg, compact_sig_has_zero_first_bit_no_ffi, sign)
     }
 }
 
@@ -428,13 +450,26 @@ impl<C: Verification> Secp256k1<C> {
     }
 }
 
-pub(crate) fn compact_sig_has_zero_first_bit(sig: &ffi::Signature) -> bool {
+pub fn compact_sig_has_zero_first_bit(sig: &ffi::Signature) -> bool {
     let mut compact = [0u8; 64];
     unsafe {
         let err = ffi::secp256k1_ecdsa_signature_serialize_compact(
             ffi::secp256k1_context_no_precomp,
             compact.as_mut_c_ptr(),
             sig,
+        );
+        debug_assert!(err == 1);
+    }
+    compact[0] < 0x80
+}
+
+pub fn compact_sig_has_zero_first_bit_no_ffi(sig: &Signature) -> bool {
+    let mut compact = [0u8; 64];
+    unsafe {
+        let err = ffi::secp256k1_ecdsa_signature_serialize_compact(
+            ffi::secp256k1_context_no_precomp,
+            compact.as_mut_c_ptr(),
+            sig.as_ptr(),
         );
         debug_assert!(err == 1);
     }
